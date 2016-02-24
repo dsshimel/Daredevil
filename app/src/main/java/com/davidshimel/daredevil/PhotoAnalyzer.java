@@ -60,11 +60,7 @@ public class PhotoAnalyzer extends AppCompatActivity
 
     public static final String TAG = "PhotoAnalyzer";
 
-    private static final String API_URL =
-            "https://vision.googleapis.com/v1/images:annotate?key=AIzaSyC4QozNLAZuk3DXauxtt799d547tAzRJsM";
-    private static final String OAUTH_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
-
-    private static final String API_KEY = "AIzaSyBn9Wb90RNqKGHh_yEzR8E0o9TAxWrPTWk";
+    
 
     private static final int GET_PHOTO_REQUEST_CODE = 1;
     private static final int WRITE_STORAGE_REQUEST_CODE = 2;
