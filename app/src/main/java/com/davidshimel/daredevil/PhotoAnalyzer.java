@@ -1,6 +1,9 @@
 package com.davidshimel.daredevil;
 
 import android.Manifest;
+import android.accounts.Account;
+import android.accounts.AccountManager;
+import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -15,27 +18,20 @@ import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
-import android.util.Base64;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
 
+import com.google.android.gms.auth.GoogleAuthException;
+import com.google.android.gms.auth.GoogleAuthUtil;
+import com.google.android.gms.auth.UserRecoverableAuthException;
+import com.google.android.gms.common.AccountPicker;
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential;
-import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
-import com.google.api.client.http.GenericUrl;
-import com.google.api.client.http.HttpContent;
-import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpRequestFactory;
-import com.google.api.client.http.HttpResponse;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.http.javanet.NetHttpTransport;
-import com.google.api.client.http.json.JsonHttpContent;
 import com.google.api.client.json.jackson2.JacksonFactory;
-
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
 
 import com.google.api.services.vision.v1.Vision;
 import com.google.api.services.vision.v1.VisionRequestInitializer;
@@ -60,16 +56,24 @@ public class PhotoAnalyzer extends AppCompatActivity
 
     public static final String TAG = "PhotoAnalyzer";
 
-    
+    private static final String OAUTH_CLIENT_ID =
+            "";
+    private static final String VISION_OAUTH_SCOPE =
+            "https://www.googleapis.com/auth/cloud-platform";
 
     private static final int GET_PHOTO_REQUEST_CODE = 1;
     private static final int WRITE_STORAGE_REQUEST_CODE = 2;
+    private static final int PICK_ACCOUNT_REQUEST_CODE = 3;
+    private static final int RECOVERABLE_AUTH_REQUEST_CODE = 4;
 
     private ImageView photoDisplay;
     private Button getPhotoButton;
     private Button analyzeButton;
     private File photoFile = null;
     private Bitmap photoBitmap = null;
+    private String accountEmail = null;
+    private String accountType = null;
+    private String oauthToken = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -96,34 +100,8 @@ public class PhotoAnalyzer extends AppCompatActivity
 //                Toast sanityCheck = Toast.makeText(
 //                        getApplicationContext(), "You clicked it", Toast.LENGTH_LONG);
 //                sanityCheck.show();
-                Intent getPhotoIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-                // Performing this check is important because if you call startActivityForResult()
-                // using an intent that no app can handle, your app will crash.
-                if (getPhotoIntent.resolveActivity(getPackageManager()) != null) {
-                    photoFile = null;
-                    File directory = null;
-                    photoBitmap = null;
-                    analyzeButton.setVisibility(View.GONE);
-                    photoDisplay.setVisibility(View.GONE);
-                    try {
-                        directory = Environment.getExternalStoragePublicDirectory(
-                                Environment.DIRECTORY_PICTURES);
-                        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
-                        String photoFileName = getString(R.string.app_name) + "_" + timeStamp + "_";
-                        photoFile = File.createTempFile(photoFileName, ".jpg", directory);
-                    } catch (IOException ioe) {
-                        Log.e(TAG, "failed to save photo at " + photoFile.getAbsolutePath()
-                                + " in directory " + directory.getAbsolutePath());
-                        Log.e(TAG, ioe.toString());
-                    }
-
-                    if (photoFile != null) {
-                        Log.i(TAG, "saving photo at " + photoFile.getAbsolutePath());
-                        // http://developer.android.com/reference/android/provider/MediaStore.html#EXTRA_OUTPUT
-                        getPhotoIntent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(photoFile));
-                        startActivityForResult(getPhotoIntent, GET_PHOTO_REQUEST_CODE);
-                    }
-                }
+                boolean photoIntentSuccess = tryStartPhotoIntentActivity();
+                Log.d(TAG, "tryStartPhotoIntentActivity " + photoIntentSuccess);
             }
         });
 
@@ -134,10 +112,98 @@ public class PhotoAnalyzer extends AppCompatActivity
             @Override
             public void onClick(View v) {
                 if (photoBitmap != null) {
-                    makeVisionRequest();
+                    setupOauth();
+//                    makeVisionRequest();
                 }
             }
         });
+    }
+
+    private boolean tryStartPhotoIntentActivity() {
+        boolean result = false;
+        Intent getPhotoIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        // Performing this check is important because if you call startActivityForResult()
+        // using an intent that no app can handle, your app will crash.
+        if (getPhotoIntent.resolveActivity(getPackageManager()) != null) {
+            photoFile = null;
+            File directory = null;
+            photoBitmap = null;
+            analyzeButton.setVisibility(View.GONE);
+            photoDisplay.setVisibility(View.GONE);
+            try {
+                directory = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_PICTURES);
+                String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+                String photoFileName = getString(R.string.app_name) + "_" + timeStamp + "_";
+                photoFile = File.createTempFile(photoFileName, ".jpg", directory);
+            } catch (IOException ioe) {
+                Log.e(TAG, "failed to save photo at " + photoFile.getAbsolutePath()
+                        + " in directory " + directory.getAbsolutePath());
+                Log.e(TAG, ioe.toString());
+            }
+
+            if (photoFile != null) {
+                Log.i(TAG, "saving photo at " + photoFile.getAbsolutePath());
+                // http://developer.android.com/reference/android/provider/MediaStore.html#EXTRA_OUTPUT
+                getPhotoIntent.putExtra(MediaStore.EXTRA_OUTPUT, Uri.fromFile(photoFile));
+                startActivityForResult(getPhotoIntent, GET_PHOTO_REQUEST_CODE);
+                result = true;
+            }
+        }
+
+        return result;
+    }
+
+    private void setupOauth() {
+        if (accountEmail == null && accountType == null) {
+            String[] accountTypes = new String[]{"com.google"};
+            Intent intent = AccountPicker.newChooseAccountIntent(null, null,
+                    accountTypes, false, null, null, null, null);
+            startActivityForResult(intent, PICK_ACCOUNT_REQUEST_CODE);
+        } else {
+            if (oauthToken == null) {
+                VisionOauthTask authTask = new VisionOauthTask(
+                        this, accountEmail, accountType, "oauth2:" + VISION_OAUTH_SCOPE);
+                authTask.execute();
+            } else {
+                Log.i(TAG, "oauth token is ready to go");
+            }
+        }
+    }
+
+    private class VisionOauthTask extends AsyncTask<Void, Void, Void> {
+        private final Activity activity;
+        private final String accountEmail;
+        private final String accountType;
+        private final String scope;
+
+        public VisionOauthTask(
+                Activity activity, String accountEmail, String accountType, String scope) {
+            this.activity = activity;
+            this.accountEmail = accountEmail;
+            this.accountType = accountType;
+            this.scope = scope;
+        }
+
+        @Override
+        protected Void doInBackground(Void... params) {
+            try {
+                Account account = new Account(accountEmail, accountType);
+                String token = GoogleAuthUtil.getToken(activity, account, scope);
+                if (token != null) {
+                    Log.i(TAG, "oauth token = " + token);
+                } else {
+                    Log.i(TAG, "oauth token is null");
+                }
+            } catch (UserRecoverableAuthException recoverableEx) {
+                Log.e(TAG, recoverableEx.toString());
+                startActivityForResult(recoverableEx.getIntent(), RECOVERABLE_AUTH_REQUEST_CODE);
+            }
+            catch (GoogleAuthException | IOException ex) {
+                Log.e(TAG, ex.toString());
+            }
+            return null;
+        }
     }
 
     private void makeVisionRequest() {
@@ -161,7 +227,8 @@ public class PhotoAnalyzer extends AppCompatActivity
 
 
             Vision.Builder visionBuilder = new Vision.Builder(httpTransport, new JacksonFactory(), null);
-            VisionRequestInitializer requestInitializer = new VisionRequestInitializer(API_KEY);
+//            VisionRequestInitializer requestInitializer = new VisionRequestInitializer(API_KEY);
+            VisionRequestInitializer requestInitializer = new VisionRequestInitializer("asdfhjk");
             visionBuilder.setVisionRequestInitializer(requestInitializer);
 
             Vision vision = visionBuilder.build();
@@ -241,65 +308,90 @@ public class PhotoAnalyzer extends AppCompatActivity
         }
     }
 
-    private class VisionApiAuthTask extends AsyncTask<Void, Void, Vision> {
-        @Override
-        protected Vision doInBackground(Void... params) {
-            try {
-                GoogleCredential credential =
-                        GoogleCredential.getApplicationDefault().createScoped(VisionScopes.all());
+//    private class VisionApiAuthTask extends AsyncTask<Void, Void, Vision> {
+//        @Override
+//        protected Vision doInBackground(Void... params) {
+//            try {
+//                GoogleCredential credential =
+//                        GoogleCredential.getApplicationDefault().createScoped(VisionScopes.all());
+//
+//            } catch (IOException ioe) {
+//                Log.e(TAG, ioe.toString());
+//                return null;
+//            }
+//        }
+//    }
 
-            } catch (IOException ioe) {
-                Log.e(TAG, ioe.toString());
-                return null;
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (resultCode == RESULT_OK) {
+            switch (requestCode) {
+                case GET_PHOTO_REQUEST_CODE:
+                    extractPhotoFromIntentData(data);
+                    break;
+                case PICK_ACCOUNT_REQUEST_CODE:
+                    // Watch out for infinite OAuth loop here.
+                    if (extractAccountInfoFromIntentData(data)) {
+                        setupOauth();
+                    } else {
+                        Log.i(TAG, "could not get account info; account email = " + accountEmail
+                                + ", account type = " + accountType);
+                    }
+                    break;
+                case RECOVERABLE_AUTH_REQUEST_CODE:
+                    Log.i(TAG, "successfully recovered from user auth exception");
+                    setupOauth();
+                    break;
             }
         }
     }
 
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        if (requestCode == GET_PHOTO_REQUEST_CODE) {
-            if (resultCode == RESULT_OK) {
-                Bundle extras = data.getExtras();
-                if (extras != null) {
-                    Bitmap photoBitmap = (Bitmap) extras.get("data");
-                    BitmapDrawable photoDrawable = new BitmapDrawable(getResources(), photoBitmap);
-                    photoDisplay.setImageDrawable(photoDrawable);
-                } else {
-                    // http://stackoverflow.com/questions/9890757/android-camera-data-intent-returns-null
-                    Log.i(TAG, "saved photo at " + photoFile.getAbsolutePath());
-                }
-
-                if (photoFile != null) {
-                    analyzeButton.setVisibility(View.VISIBLE);
-                    photoDisplay.setVisibility(View.VISIBLE);
-                    BitmapFactory.Options options = new BitmapFactory.Options();
-                    // http://developer.android.com/training/displaying-bitmaps/load-bitmap.html
-                    options.inJustDecodeBounds = true;
-                    BitmapFactory.decodeFile(photoFile.getAbsolutePath(), options);
-                    int originalWidth = options.outWidth;
-                    int originalHeight = options.outHeight;
-                    int requestWidth;
-                    int requestHeight;
-                    if (originalWidth > originalHeight) {
-                        requestWidth = 640;
-                        requestHeight = 480;
-                    } else {
-                        requestWidth = 480;
-                        requestHeight = 640;
-                    }
-
-                    options.inJustDecodeBounds = false;
-                    // inSampleSize must be greater than 1
-                    // http://developer.android.com/reference/android/graphics/BitmapFactory.Options.html#inSampleSize
-                    options.inSampleSize = Math.min(
-                            originalWidth / requestWidth, originalHeight / requestHeight);
-                    photoBitmap = BitmapFactory.decodeFile(
-                            photoFile.getAbsolutePath(), options);
-                    Drawable photoDrawable = new BitmapDrawable(getResources(), photoBitmap);
-                    photoDisplay.setImageDrawable(photoDrawable);
-                }
-            }
+    private void extractPhotoFromIntentData(Intent data) {
+        Bundle extras = data.getExtras();
+        if (extras != null) {
+            Bitmap photoBitmap = (Bitmap) extras.get("data");
+            BitmapDrawable photoDrawable = new BitmapDrawable(getResources(), photoBitmap);
+            photoDisplay.setImageDrawable(photoDrawable);
+        } else {
+            // http://stackoverflow.com/questions/9890757/android-camera-data-intent-returns-null
+            Log.i(TAG, "saved photo at " + photoFile.getAbsolutePath());
         }
+
+        if (photoFile != null) {
+            analyzeButton.setVisibility(View.VISIBLE);
+            photoDisplay.setVisibility(View.VISIBLE);
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            // http://developer.android.com/training/displaying-bitmaps/load-bitmap.html
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(photoFile.getAbsolutePath(), options);
+            int originalWidth = options.outWidth;
+            int originalHeight = options.outHeight;
+            int requestWidth;
+            int requestHeight;
+            if (originalWidth > originalHeight) {
+                requestWidth = 640;
+                requestHeight = 480;
+            } else {
+                requestWidth = 480;
+                requestHeight = 640;
+            }
+
+            options.inJustDecodeBounds = false;
+            // inSampleSize must be greater than 1
+            // http://developer.android.com/reference/android/graphics/BitmapFactory.Options.html#inSampleSize
+            options.inSampleSize = Math.min(
+                    originalWidth / requestWidth, originalHeight / requestHeight);
+            photoBitmap = BitmapFactory.decodeFile(
+                    photoFile.getAbsolutePath(), options);
+            Drawable photoDrawable = new BitmapDrawable(getResources(), photoBitmap);
+            photoDisplay.setImageDrawable(photoDrawable);
+        }
+    }
+
+    private boolean extractAccountInfoFromIntentData(Intent data) {
+        accountEmail = data.getStringExtra(AccountManager.KEY_ACCOUNT_NAME);
+        accountType = data.getStringExtra(AccountManager.KEY_ACCOUNT_TYPE);
+        return accountEmail != null && accountType != null;
     }
 
     @Override
