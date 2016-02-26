@@ -10,10 +10,19 @@
     android:paddingTop="@dimen/activity_vertical_margin"
     tools:context="com.davidshimel.daredevil.PhotoAnalyzer">
 
+    <TextView
+        android:id="@+id/annotation_info"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignParentTop="true"
+        android:visibility="gone"/>
+
     <ImageView
         android:id="@+id/photo_thumbnail"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:layout_alignWithParentIfMissing="true"
+        android:layout_below="@id/annotation_info"
         android:layout_above="@+id/button_container"
         android:scaleType="fitCenter"
         android:layout_centerInParent="true"

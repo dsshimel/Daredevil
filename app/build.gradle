@@ -33,4 +33,5 @@ dependencies {
         exclude group: 'org.apache.httpcomponents', module: 'httpclient'
     }
     compile 'com.google.apis:google-api-services-vision:v1-rev6-1.21.0'
+//    compile 'com.google.api-client:google-api-client-extensions:1.6.0-beta'
 }

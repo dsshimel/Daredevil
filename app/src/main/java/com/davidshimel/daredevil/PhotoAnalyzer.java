@@ -22,22 +22,20 @@ import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.TextView;
 
 import com.google.android.gms.auth.GoogleAuthException;
 import com.google.android.gms.auth.GoogleAuthUtil;
 import com.google.android.gms.auth.UserRecoverableAuthException;
 import com.google.android.gms.common.AccountPicker;
 import com.google.api.client.googleapis.auth.oauth2.GoogleCredential;
-import com.google.api.client.http.HttpRequestFactory;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.jackson2.JacksonFactory;
 
 import com.google.api.services.vision.v1.Vision;
-import com.google.api.services.vision.v1.VisionRequestInitializer;
 import com.google.api.services.vision.v1.VisionScopes;
 import com.google.api.services.vision.v1.model.AnnotateImageRequest;
-import com.google.api.services.vision.v1.model.AnnotateImageResponse;
 import com.google.api.services.vision.v1.model.BatchAnnotateImagesRequest;
 import com.google.api.services.vision.v1.model.BatchAnnotateImagesResponse;
 import com.google.api.services.vision.v1.model.Feature;
@@ -61,12 +59,16 @@ public class PhotoAnalyzer extends AppCompatActivity
     private static final String VISION_OAUTH_SCOPE =
             "https://www.googleapis.com/auth/cloud-platform";
 
+    private String VISION_BASE_URL = "https://vision.googleapis.com";
+    private String VISION_ANNOTATE_URL_SUFFIX = "/v1/images:annotate";
+
     private static final int GET_PHOTO_REQUEST_CODE = 1;
     private static final int WRITE_STORAGE_REQUEST_CODE = 2;
     private static final int PICK_ACCOUNT_REQUEST_CODE = 3;
     private static final int RECOVERABLE_AUTH_REQUEST_CODE = 4;
 
     private ImageView photoDisplay;
+    private TextView annotationInfo;
     private Button getPhotoButton;
     private Button analyzeButton;
     private File photoFile = null;
@@ -97,9 +99,6 @@ public class PhotoAnalyzer extends AppCompatActivity
         getPhotoButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-//                Toast sanityCheck = Toast.makeText(
-//                        getApplicationContext(), "You clicked it", Toast.LENGTH_LONG);
-//                sanityCheck.show();
                 boolean photoIntentSuccess = tryStartPhotoIntentActivity();
                 Log.d(TAG, "tryStartPhotoIntentActivity " + photoIntentSuccess);
             }
@@ -112,11 +111,14 @@ public class PhotoAnalyzer extends AppCompatActivity
             @Override
             public void onClick(View v) {
                 if (photoBitmap != null) {
-                    setupOauth();
-//                    makeVisionRequest();
+                    if (setupOauth()) {
+                        makeVisionRequest();
+                    }
                 }
             }
         });
+
+        annotationInfo = (TextView) findViewById(R.id.annotation_info);
     }
 
     private boolean tryStartPhotoIntentActivity() {
@@ -154,7 +156,8 @@ public class PhotoAnalyzer extends AppCompatActivity
         return result;
     }
 
-    private void setupOauth() {
+    private boolean setupOauth() {
+        boolean result = false;
         if (accountEmail == null && accountType == null) {
             String[] accountTypes = new String[]{"com.google"};
             Intent intent = AccountPicker.newChooseAccountIntent(null, null,
@@ -167,8 +170,10 @@ public class PhotoAnalyzer extends AppCompatActivity
                 authTask.execute();
             } else {
                 Log.i(TAG, "oauth token is ready to go");
+                result = true;
             }
         }
+        return result;
     }
 
     private class VisionOauthTask extends AsyncTask<Void, Void, Void> {
@@ -192,6 +197,8 @@ public class PhotoAnalyzer extends AppCompatActivity
                 String token = GoogleAuthUtil.getToken(activity, account, scope);
                 if (token != null) {
                     Log.i(TAG, "oauth token = " + token);
+                    oauthToken = token;
+                    makeVisionRequest();
                 } else {
                     Log.i(TAG, "oauth token is null");
                 }
@@ -211,31 +218,19 @@ public class PhotoAnalyzer extends AppCompatActivity
         boolean streamSuccess = photoBitmap.compress(
                 Bitmap.CompressFormat.JPEG, 100 /* quality */, byteStream);
 //        String photoBase64 = Base64.encodeToString(photoBytes, Base64.DEFAULT);
+        Log.i(TAG, "did I successfully compress the photo bitmap? " + streamSuccess);
         Image photoBase64 = new Image();
         photoBase64.encodeContent(byteStream.toByteArray());
 
         try {
             NetHttpTransport.Builder transportBuilder = new NetHttpTransport.Builder();
             HttpTransport httpTransport = transportBuilder.build();
-            HttpRequestFactory factory = httpTransport.createRequestFactory();
 
-            // Throws network operation on main thread
-//            GoogleCredential credential = GoogleCredential.getApplicationDefault();
-//            List<String> scopes = new ArrayList<>();
-//            scopes.add("https://www.googleapis.com/auth/cloud-platform");
-//            credential = credential.createScoped(scopes);
-
-
-            Vision.Builder visionBuilder = new Vision.Builder(httpTransport, new JacksonFactory(), null);
-//            VisionRequestInitializer requestInitializer = new VisionRequestInitializer(API_KEY);
-            VisionRequestInitializer requestInitializer = new VisionRequestInitializer("asdfhjk");
-            visionBuilder.setVisionRequestInitializer(requestInitializer);
-
-            Vision vision = visionBuilder.build();
-            BatchAnnotateImagesRequest batchRequest = new BatchAnnotateImagesRequest();
-
-            AnnotateImageRequest annotateImageRequest = new AnnotateImageRequest();
-            annotateImageRequest.setImage(photoBase64);
+            GoogleCredential credential = new GoogleCredential().setAccessToken(oauthToken);
+            credential = credential.createScoped(VisionScopes.all());
+            Vision.Builder visionBuilder = new Vision.Builder(httpTransport, new JacksonFactory(), credential);
+            visionBuilder.setApplicationName(getResources().getString(R.string.app_name));
+            Vision vision  = visionBuilder.build();
 
             Feature labelDetectionFeature = new Feature();
             labelDetectionFeature.setType("LABEL_DETECTION");
@@ -243,84 +238,55 @@ public class PhotoAnalyzer extends AppCompatActivity
             List<Feature> features = new ArrayList<>();
             features.add(labelDetectionFeature);
 
-            annotateImageRequest.setFeatures(features);
+            Vision.Images images = vision.images();
 
+            AnnotateImageRequest annotateImageRequest = new AnnotateImageRequest();
+            annotateImageRequest.setImage(photoBase64);
+            annotateImageRequest.setFeatures(features);
             List<AnnotateImageRequest> requests = new ArrayList<>();
             requests.add(annotateImageRequest);
 
-            Vision.Images.Annotate annotateRequest = vision.images().annotate(batchRequest);
-            annotateRequest.setDisableGZipContent(true);
+            BatchAnnotateImagesRequest batchRequest = new BatchAnnotateImagesRequest();
+            batchRequest.setRequests(requests);
 
-            ApiRequestTask task = new ApiRequestTask();
-            task.execute(annotateRequest);
+            Vision.Images.Annotate annotate = images.annotate(batchRequest);
 
-//            GenericUrl url = new GenericUrl(API_URL);
-//            JSONObject imageContent = new JSONObject();
-//            imageContent.put("content", photoBase64);
-//
-//            JSONObject feature = new JSONObject();
-//            feature.put("type", "LABEL_DETECTION");
-//            feature.put("maxResults", 1);
-//            JSONArray features = new JSONArray();
-//            features.put(feature);
-//
-//            JSONObject request = new JSONObject();
-//            request.put("image", imageContent);
-//            request.put("features", features);
-//            JSONArray requests = new JSONArray();
-//            requests.put(request);
-//            JSONObject data = new JSONObject();
-//            data.put("requests", requests);
-//            HttpContent content = new JsonHttpContent(new JacksonFactory(), data);
-//            HttpRequest postRequest = factory.buildPostRequest(url, content);
-//            ApiRequestTask task = new ApiRequestTask();
-//            task.execute(postRequest);
-//            HttpResponse postResponse = postRequest.execute();
-        } catch (IOException ioe) {
-            Log.e(TAG, ioe.toString());
-//        } catch (JSONException je) {
-//            Log.e(TAG, je.toString());
-        } catch (RuntimeException re) {
-            Log.e(TAG, re.toString());
+            new VisionApiRequestTask().execute(annotate);
+
+        } catch (IOException | RuntimeException ex) {
+            Log.e(TAG, ex.toString());
         }
     }
 
-    private class ApiRequestTask extends AsyncTask<Vision.Images.Annotate, Void, BatchAnnotateImagesResponse> {
+    private class VisionApiRequestTask extends AsyncTask<Vision.Images.Annotate, Void, BatchAnnotateImagesResponse> {
+        @Override
+        protected BatchAnnotateImagesResponse doInBackground(Vision.Images.Annotate... params) {
+            for (int i = 0; i < params.length; i++) {
+                try {
+                    return params[i].execute();
+                } catch (IOException ioe) {
+                    Log.e(TAG, ioe.toString());
+                }
+            }
+
+            return null;
+        }
 
         @Override
-        protected BatchAnnotateImagesResponse doInBackground(Vision.Images.Annotate... annotateRequests) {
-            BatchAnnotateImagesResponse result = null;
+        protected void onPostExecute(BatchAnnotateImagesResponse batchAnnotateImagesResponse) {
+            super.onPostExecute(batchAnnotateImagesResponse);
             try {
-                result = annotateRequests[0].execute();
-            } catch (Exception e) {
-                Log.e(TAG, e.toString());
-            }
-
-            return result;
-        }
-
-        @Override
-        protected void onPostExecute(BatchAnnotateImagesResponse response) {
-            if (response != null) {
-                AnnotateImageResponse annotateResponse = response.getResponses().get(0);
-                Log.i(TAG, annotateResponse.toString());
+                String responseString =
+                        batchAnnotateImagesResponse.getResponses().get(0).toPrettyString();
+                Log.i(TAG, responseString);
+                annotationInfo.setVisibility(View.VISIBLE);
+                annotationInfo.setText(responseString);
+            } catch (IOException ioe) {
+                Log.e(TAG, ioe.toString());
             }
         }
     }
 
-//    private class VisionApiAuthTask extends AsyncTask<Void, Void, Vision> {
-//        @Override
-//        protected Vision doInBackground(Void... params) {
-//            try {
-//                GoogleCredential credential =
-//                        GoogleCredential.getApplicationDefault().createScoped(VisionScopes.all());
-//
-//            } catch (IOException ioe) {
-//                Log.e(TAG, ioe.toString());
-//                return null;
-//            }
-//        }
-//    }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -385,6 +351,8 @@ public class PhotoAnalyzer extends AppCompatActivity
                     photoFile.getAbsolutePath(), options);
             Drawable photoDrawable = new BitmapDrawable(getResources(), photoBitmap);
             photoDisplay.setImageDrawable(photoDrawable);
+            annotationInfo.setText("");
+            annotationInfo.setVisibility(View.GONE);
         }
     }
 
