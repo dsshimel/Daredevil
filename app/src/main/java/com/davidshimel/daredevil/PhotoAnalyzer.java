@@ -41,6 +41,10 @@ import com.google.api.services.vision.v1.model.BatchAnnotateImagesResponse;
 import com.google.api.services.vision.v1.model.Feature;
 import com.google.api.services.vision.v1.model.Image;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
@@ -62,10 +66,16 @@ public class PhotoAnalyzer extends AppCompatActivity
     private String VISION_BASE_URL = "https://vision.googleapis.com";
     private String VISION_ANNOTATE_URL_SUFFIX = "/v1/images:annotate";
 
-    private static final int GET_PHOTO_REQUEST_CODE = 1;
-    private static final int WRITE_STORAGE_REQUEST_CODE = 2;
-    private static final int PICK_ACCOUNT_REQUEST_CODE = 3;
-    private static final int RECOVERABLE_AUTH_REQUEST_CODE = 4;
+    private static final int GET_PHOTO_REQUEST_CODE = 1000;
+    private static final int WRITE_STORAGE_REQUEST_CODE = 2000;
+    private static final int PICK_ACCOUNT_REQUEST_CODE = 3000;
+    private static final int RECOVERABLE_AUTH_REQUEST_CODE = 4000;
+
+    private static final String ACCOUNT_EMAIL = "ACCOUNT_EMAIL";
+    private static final String ACCOUNT_TYPE = "ACCOUNT_TYPE";
+    private static final String OAUTH_TOKEN = "OAUTH_TOKEN";
+    private static final String PHOTO_BITMAP = "PHOTO_BITMAP";
+    private static final String PHOTO_FILE = "PHOTO_FILE";
 
     private ImageView photoDisplay;
     private TextView annotationInfo;
@@ -119,6 +129,37 @@ public class PhotoAnalyzer extends AppCompatActivity
         });
 
         annotationInfo = (TextView) findViewById(R.id.annotation_info);
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+
+        outState.putString(ACCOUNT_EMAIL, accountEmail);
+        outState.putString(ACCOUNT_TYPE, accountType);
+        outState.putString(OAUTH_TOKEN, oauthToken);
+        outState.putParcelable(PHOTO_BITMAP, photoBitmap);
+        outState.putSerializable(PHOTO_FILE, photoFile);
+    }
+
+    @Override
+    protected void onRestoreInstanceState(Bundle savedInstanceState) {
+        super.onRestoreInstanceState(savedInstanceState);
+
+        accountEmail = savedInstanceState.getString(ACCOUNT_EMAIL);
+        accountType = savedInstanceState.getString(ACCOUNT_TYPE);
+        oauthToken = savedInstanceState.getString(OAUTH_TOKEN);
+        photoBitmap = savedInstanceState.getParcelable(PHOTO_BITMAP);
+        photoFile = (File) savedInstanceState.getSerializable(PHOTO_FILE);
+
+        if (photoBitmap != null) {
+            setPhotoFromBitmap(photoBitmap);
+            photoDisplay.setVisibility(View.VISIBLE);
+            analyzeButton.setVisibility(View.VISIBLE);
+        } else {
+            analyzeButton.setVisibility(View.GONE);
+            photoDisplay.setVisibility(View.GONE);
+        }
     }
 
     private boolean tryStartPhotoIntentActivity() {
@@ -277,12 +318,23 @@ public class PhotoAnalyzer extends AppCompatActivity
             super.onPostExecute(batchAnnotateImagesResponse);
             try {
                 String responseString =
-                        batchAnnotateImagesResponse.getResponses().get(0).toPrettyString();
+//                        batchAnnotateImagesResponse.getResponses().get(0).toPrettyString();
+                        batchAnnotateImagesResponse.getResponses().get(0).toString();
                 Log.i(TAG, responseString);
+                JSONObject responseJson = new JSONObject(responseString);
+                JSONArray labelAnnotations = responseJson.getJSONArray("labelAnnotations");
+                StringBuilder annotations = new StringBuilder();
+                for (int i = 0; i < labelAnnotations.length(); i++) {
+                    JSONObject annotation = labelAnnotations.getJSONObject(i);
+                    String description = annotation.getString("description");
+                    double score = annotation.getDouble("score");
+                    annotations.append(description + ", " + score + "\r\n");
+                }
                 annotationInfo.setVisibility(View.VISIBLE);
-                annotationInfo.setText(responseString);
-            } catch (IOException ioe) {
-                Log.e(TAG, ioe.toString());
+//                annotationInfo.setText(responseJson.toString());
+                annotationInfo.setText(annotations.toString());
+            } catch (JSONException ex) {
+                Log.e(TAG, ex.toString());
             }
         }
     }
@@ -312,15 +364,23 @@ public class PhotoAnalyzer extends AppCompatActivity
         }
     }
 
+    private void setPhotoFromBitmap(Bitmap photo) {
+        photoDisplay.setImageDrawable(new BitmapDrawable(getResources(), photo));
+    }
+
     private void extractPhotoFromIntentData(Intent data) {
         Bundle extras = data.getExtras();
         if (extras != null) {
-            Bitmap photoBitmap = (Bitmap) extras.get("data");
-            BitmapDrawable photoDrawable = new BitmapDrawable(getResources(), photoBitmap);
-            photoDisplay.setImageDrawable(photoDrawable);
+            photoBitmap = (Bitmap) extras.get("data");
+            setPhotoFromBitmap(photoBitmap);
         } else {
             // http://stackoverflow.com/questions/9890757/android-camera-data-intent-returns-null
-            Log.i(TAG, "saved photo at " + photoFile.getAbsolutePath());
+            if (photoFile != null) {
+                Log.i(TAG, "saved photo at " + photoFile.getAbsolutePath());
+            } else {
+                // I think this happens when I rotate the phone.
+                Log.i(TAG, "photoFile is null");
+            }
         }
 
         if (photoFile != null) {
@@ -335,9 +395,11 @@ public class PhotoAnalyzer extends AppCompatActivity
             int requestWidth;
             int requestHeight;
             if (originalWidth > originalHeight) {
+                Log.i(TAG, "Got landscape from bitmap");
                 requestWidth = 640;
                 requestHeight = 480;
             } else {
+                Log.i(TAG, "Got portrait from bitmap");
                 requestWidth = 480;
                 requestHeight = 640;
             }
@@ -349,10 +411,32 @@ public class PhotoAnalyzer extends AppCompatActivity
                     originalWidth / requestWidth, originalHeight / requestHeight);
             photoBitmap = BitmapFactory.decodeFile(
                     photoFile.getAbsolutePath(), options);
-            Drawable photoDrawable = new BitmapDrawable(getResources(), photoBitmap);
-            photoDisplay.setImageDrawable(photoDrawable);
+
+            setPhotoFromBitmap(photoBitmap);
             annotationInfo.setText("");
             annotationInfo.setVisibility(View.GONE);
+
+//            try {
+                // This always returns 0 for orientation.
+//                ExifInterface exif = new ExifInterface(photoFile.getAbsolutePath());
+//                int orientation = exif.getAttributeInt(
+//                        ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+//                if (orientation == ExifInterface.ORIENTATION_ROTATE_270 || orientation == ExifInterface.ORIENTATION_ROTATE_90) {
+//                    // Landscape
+//                    Log.i(TAG, "Got landscape from EXIF");
+//                    requestWidth = 640;
+//                    requestHeight = 480;
+//                } else {
+//                    // portrait
+//                    Log.i(TAG, "Got portrait from EXIF");
+//                    requestWidth = 480;
+//                    requestHeight = 640;
+//                }
+
+
+//            } catch (IOException e) {
+//                Log.e(TAG, e.toString());
+//            }
         }
     }
 
